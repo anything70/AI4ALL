@@ -29,6 +29,11 @@ We are utilizing the **Digitize-HCD** dataset, which consists of 1,277 high-reso
 └── README.md           # Project documentation
 ```
 
+## Prerequisites
+- Python 3.10+
+- Node.js 18+ (for frontend development)
+- Ultralytics YOLOv8 library
+
 ## Getting Started
 
 1. **Clone the repository:**
@@ -39,8 +44,3 @@ We are utilizing the **Digitize-HCD** dataset, which consists of 1,277 high-reso
 
 2. **Open the Notebook:**
    Upload `AI4ALL.ipynb` to Google Colab to access the data pipeline and training environment.
-
-## Team
-- **Jonathan:** Model Architecture & Training
-- **Samantha:** Data Analysis & Visualization
-- **Dikshant:** Data Pipeline & Preprocessing
