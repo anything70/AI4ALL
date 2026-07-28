@@ -1,0 +1,17 @@
+import tarfile
+import os
+
+final_tar_name = r"C:\Users\jonha\Downloads\digitize_hcd3.zip"
+folders_to_zip = [r"C:\Users\jonha\Downloads\Digitize-HCD Dataset\Component Symbol and Text Label Data", r"C:\Users\jonha\Downloads\Digitize-HCD Dataset\Component Port Location Data"]
+
+
+print(f"Creating {final_tar_name} via stream...")
+
+with tarfile.open(final_tar_name, "w") as tar:
+    for folder in folders_to_zip:
+        if os.path.exists(folder):
+            print(f"Streaming {folder}...")
+            # tarfile natively keeps the folders separate without manual looping
+            tar.add(folder, arcname=folder)
+
+print(f"Done! Created {final_tar_name}")
