@@ -61,7 +61,7 @@ def preprocess_image(image: Image.Image):
     img_np = np.expand_dims(img_np, axis=0)
     return img_np
 
-def postprocess_output(output, original_size, conf_thresh=0.25, iou_thresh=0.45):
+def postprocess_output(output, conf_thresh=0.25, iou_thresh=0.45):
     predictions = np.squeeze(output[0]).T
     scores = np.max(predictions[:, 4:], axis=1)
     mask = scores > conf_thresh
@@ -74,27 +74,24 @@ def postprocess_output(output, original_size, conf_thresh=0.25, iou_thresh=0.45)
     boxes = predictions[:, :4]
     class_ids = np.argmax(predictions[:, 4:], axis=1)
 
-    orig_w, orig_h = original_size
-    scale_x = orig_w / IMG_SIZE[0]
-    scale_y = orig_h / IMG_SIZE[1]
-
     x_center, y_center, box_w, box_h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-    x1 = (x_center - box_w / 2) * scale_x
-    y1 = (y_center - box_h / 2) * scale_y
-    x2 = (x_center + box_w / 2) * scale_x
-    y2 = (y_center + box_h / 2) * scale_y
-    boxes = np.stack([x1, y1, x2, y2], axis=1)
+    x1 = (x_center - box_w / 2) / IMG_SIZE[0]
+    y1 = (y_center - box_h / 2) / IMG_SIZE[1]
+    x2 = (x_center + box_w / 2) / IMG_SIZE[0]
+    y2 = (y_center + box_h / 2) / IMG_SIZE[1]
+    
+    norm_boxes = np.stack([x1, y1, x2, y2], axis=1)
 
     indices = []
-    if len(boxes) > 0:
+    if len(norm_boxes) > 0:
         order = scores.argsort()[::-1]
-        keep = [True] * len(boxes)
-        for i in range(len(boxes)):
+        keep = [True] * len(norm_boxes)
+        for i in range(len(norm_boxes)):
             idx_i = order[i]
             if not keep[idx_i]:
                 continue
             indices.append(idx_i)
-            for j in range(i + 1, len(boxes)):
+            for j in range(i + 1, len(norm_boxes)):
                 idx_j = order[j]
                 if not keep[idx_j]:
                     continue
@@ -110,7 +107,7 @@ def postprocess_output(output, original_size, conf_thresh=0.25, iou_thresh=0.45)
                     keep[idx_j] = False
 
     return [{
-        'box': boxes[idx].tolist(),
+        'box_norm': norm_boxes[idx].tolist(),
         'score': float(scores[idx]),
         'class_name': CLASS_NAMES[int(class_ids[idx])]
     } for idx in indices]
@@ -127,89 +124,100 @@ iou_threshold = st.sidebar.slider("Overlap Sensitivity (IoU)", 0.10, 0.90, 0.45,
 # --- File / Sample Image Selector ---
 st.markdown("### Choose or Upload a Schematic")
 
-# 1. Look for sample images in the "samples" directory
 SAMPLE_DIR = "samples"
 sample_files = []
 if os.path.exists(SAMPLE_DIR):
     sample_files = [f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith(('png', 'jpg', 'jpeg'))]
 
-# 2. Add an input method choice
 input_type = st.radio(
     "Select Input Source:",
     ["Upload Custom Image", "Use Sample Schematic"],
     horizontal=True
 )
 
-# --- Process and Display ---
-def display_image(image):
-    if image is not None:
-        orig_size = image.size
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Original Image")
-            st.image(image, use_container_width=True)
-
-        with col2:
-            st.subheader("Detected Components")
-            input_tensor = preprocess_image(image)
-            input_name = session.get_inputs()[0].name
-            output_name = session.get_outputs()[0].name
-            outputs = session.run([output_name], {input_name: input_tensor})
-
-            detections = postprocess_output(outputs, orig_size, conf_threshold, iou_threshold)
-
-            if detections:
-                img_draw = image.copy()
-                draw = ImageDraw.Draw(img_draw)
-                font_size = max(12, int(0.02 * min(orig_size)))
-                try:
-                    font = ImageFont.truetype("arial.ttf", font_size)
-                except IOError:
-                    font = ImageFont.load_default()
-
-                for det in detections:
-                    x1, y1, x2, y2 = det['box']
-                    label = f"{det['class_name']} {det['score']:.2f}"
-                    color = CLASS_COLORS.get(det['class_name'], DEFAULT_COLOR)
-
-                    draw.rectangle([x1, y1, x2, y2], outline=color, width=4)
-                    bbox = draw.textbbox((0, 0), label, font=font)
-                    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                    draw.rectangle([x1, y1 - th - 6, x1 + tw + 6, y1], fill=color)
-                    draw.text((x1 + 3, y1 - th - 3), label, fill="white", font=font)
-
-                st.image(img_draw, use_container_width=True)
-            else:
-                st.warning("No components detected with current thresholds.")
-
-        # Detection Metrics Summary
-        if detections:
-            st.markdown("### Detection Summary")
-            st.write(f"**Total components detected: {len(detections)}**")
-            
-            counts = {}
-            for det in detections:
-                name = det['class_name']
-                counts[name] = counts.get(name, 0) + 1
-
-            cols = st.columns(min(4, len(counts)))
-            for i, (name, count) in enumerate(sorted(counts.items())):
-                cols[i % len(cols)].metric(label=name, value=count)
-
+image = None
 
 if input_type == "Use Sample Schematic":
     if sample_files:
         selected_sample = st.selectbox("Choose a sample schematic:", sample_files)
         sample_path = os.path.join(SAMPLE_DIR, selected_sample)
         image = Image.open(sample_path).convert("RGB")
-        display_image(image)
     else:
         st.info("No sample images found in the 'samples/' folder. Please upload an image below.")
 
-if input_type == "Upload Custom Image":
+if input_type == "Upload Custom Image" or image is None:
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
     if uploaded_file is not None:
         image = Image.open(uploaded_file).convert("RGB")
-        display_image(image)
 
+# --- Process and Display ---
+if image is not None:
+    orig_w, orig_h = image.size
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Original Image")
+        st.image(image, use_container_width=True)
+
+    with col2:
+        st.subheader("Detected Components")
+        
+        input_tensor = preprocess_image(image)
+        input_name = session.get_inputs()[0].name
+        output_name = session.get_outputs()[0].name
+        outputs = session.run([output_name], {input_name: input_tensor})
+
+        detections = postprocess_output(outputs, conf_threshold, iou_threshold)
+
+        if detections:
+            img_draw = image.copy()
+            draw = ImageDraw.Draw(img_draw)
+            
+            font_size = max(24, int(0.025 * min(orig_w, orig_h)))
+            lw = max(3, int(0.004 * min(orig_w, orig_h)))
+
+            try:
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except IOError:
+                font = ImageFont.load_default()
+
+            for det in detections:
+                xn1, yn1, xn2, yn2 = det['box_norm']
+                x1, y1 = xn1 * orig_w, yn1 * orig_h
+                x2, y2 = xn2 * orig_w, yn2 * orig_h
+                
+                label = f" {det['class_name']} {det['score']:.2f} "
+                color = CLASS_COLORS.get(det['class_name'], DEFAULT_COLOR)
+
+                draw.rectangle([x1, y1, x2, y2], outline=color, width=lw)
+                
+                bbox = draw.textbbox((0, 0), label, font=font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+
+                text_y1 = y1 - th - (lw * 2)
+                if text_y1 < 0:
+                    text_y1 = y1
+
+                text_y2 = text_y1 + th + (lw * 2)
+
+                draw.rectangle([x1, text_y1, x1 + tw + (lw * 2), text_y2], fill=color)
+                draw.text((x1 + lw, text_y1 + (lw // 2)), label, fill="white", font=font)
+
+            st.image(img_draw, use_container_width=True)
+        else:
+            st.warning("No components detected with current thresholds.")
+
+    # Detection Metrics Summary
+    if detections:
+        st.markdown("### Detection Summary")
+        st.write(f"**Total components detected: {len(detections)}**")
+        
+        counts = {}
+        for det in detections:
+            name = det['class_name']
+            counts[name] = counts.get(name, 0) + 1
+
+        cols = st.columns(min(4, len(counts)))
+        for i, (name, count) in enumerate(sorted(counts.items())):
+            cols[i % len(cols)].metric(label=name, value=count)
