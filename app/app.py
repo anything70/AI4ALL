@@ -12,7 +12,12 @@ st.set_page_config(
     layout="wide"
 )
 
-LOCAL_ONNX_MODEL_PATH = "best.onnx"
+# --- Paths (anchored to this script's location, not the working directory) ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCAL_ONNX_MODEL_PATH = os.path.join(BASE_DIR, "..", "models", "best.onnx")
+FONT_PATH = os.path.join(BASE_DIR, "arial.ttf")
+SAMPLE_DIR = os.path.join(BASE_DIR, "samples")
+
 IMG_SIZE = (640, 640)
 
 CLASS_NAMES = [
@@ -128,7 +133,6 @@ iou_threshold = st.sidebar.slider("Overlap Sensitivity (IoU)", 0.10, 0.90, 0.45,
 st.markdown("### Choose or Upload a Schematic")
 
 # 1. Look for sample images in the "samples" directory
-SAMPLE_DIR = "samples"
 sample_files = []
 if os.path.exists(SAMPLE_DIR):
     sample_files = [f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith(('png', 'jpg', 'jpeg'))]
@@ -164,7 +168,7 @@ def display_image(image):
                 draw = ImageDraw.Draw(img_draw)
                 font_size = max(12, int(0.02 * min(orig_size)))
                 try:
-                    font = ImageFont.truetype("./arial.ttf", font_size)
+                    font = ImageFont.truetype(FONT_PATH, font_size)
                 except IOError:
                     font = ImageFont.load_default()
 
@@ -212,4 +216,3 @@ if input_type == "Upload Custom Image":
     if uploaded_file is not None:
         image = Image.open(uploaded_file).convert("RGB")
         display_image(image)
-

@@ -43,9 +43,7 @@ venv.bak/
 # Data and Models
 data/
 datasets/
-models/
 *.pt
-*.onnx
 *.weights
 yolov8n.pt
 
