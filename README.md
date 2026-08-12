@@ -34,7 +34,7 @@ We are utilizing the **Digitize-HCD** dataset, which consists of 1,277 high-reso
 └── README.md                                       # Project documentation
 ```
  
-Data is not stored in this repository — schematic images are loaded from Google Drive. [Add link/instructions here.]
+Data is not stored in this repository — schematic images are loaded from Google Drive at (https://drive.google.com/drive/folders/1SP_MCMQp9Xx-UF4tJfMENyKnxK3ULvwP?usp=share_link)
  
 ## Prerequisites
 - Python 3.10+
