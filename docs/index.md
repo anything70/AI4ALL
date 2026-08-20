@@ -1,8 +1,13 @@
 # Electronic Schematic Symbol Classifier
 
 Developed an end-to-end computer vision pipeline using a supervised YOLOv8 Nano object detection model to detect and classify 17 foundational electronic components in hand-drawn schematics.
-![Example](assets/model_example.png)
-*Fig. 1: Model classification example*
+
+<p align='center'>
+    <img src='assets/model_example.png' alt='Example'>
+    <br>
+    <em>Fig. 1: Model classification example</em>
+</p>
+
 
 ## Problem Statement <!--- do not change this line -->
 
@@ -14,8 +19,12 @@ Hand-drawn circuit schematics are standard for fast prototyping and engineering 
 2. **Balanced Precision and Recall:** Reached **97.5% overall precision** and **97.5% overall recall**, with foundational components (resistors, capacitors, diodes) achieving near-perfect ~99% detection rates.
 3. **Ultra-Fast Inference:** Attained a **~2.9 ms inference latency** per image on GPU using an exported ONNX format.
 4. **Interactive Application:** Built and deployed a functional Streamlit user interface supporting custom image uploads, sample test schematics, and dynamic sensitivity/confidence threshold tuning.
-![Metrics](assets/model_metrics.png)
-*Fig. 2: Key metrics per component class.*
+
+<p align='center'>
+    <img src='assets/model_metrics.png' alt='Metrics'>
+    <br>
+    <em>Fig. 2: Key metrics per component class</em>
+</p>
 
 ## Methodologies <!--- do not change this line -->
 
@@ -50,4 +59,4 @@ This project was completed in collaboration with:
 - Dikshant Aryal
 - Youssef Shaaban
 
-Streamlit Website: https://ai4all-electronic-schematics.streamlit.app/
+[Access Streamlit Website](https://ai4all-electronic-schematics.streamlit.app/)
