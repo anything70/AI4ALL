@@ -1,3 +1,9 @@
+---
+layout: default
+title: Electronic Schematic Symbol Classifier
+theme: jekyll-theme-primer
+---
+
 # Electronic Schematic Symbol Classifier
 
 Developed an end-to-end computer vision pipeline using a supervised YOLOv8 Nano object detection model to detect and classify 17 foundational electronic components in hand-drawn schematics, achieving a 98.8% mAP@50 and an interactive Streamlit deployment within the AI4ALL Ignite accelerator[cite: 1].
