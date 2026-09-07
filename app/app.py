@@ -21,22 +21,29 @@ SAMPLE_DIR = os.path.join(BASE_DIR, "samples")
 IMG_SIZE = (640, 640)
 
 CLASS_NAMES = [
-    'BJT-NPN', 'BJT-PNP', 'Capacitor', 'Diode', 'GND', 'I-AC', 'I-DC', 
-    'Inductor', 'MOSFET-N', 'MOSFET-P', 'Op-Amp', 'Resistor', 'V-AC', 
+    'BJT-NPN', 'BJT-PNP', 'Capacitor', 'Diode', 'GND', 'I-AC', 'I-DC',
+    'Inductor', 'MOSFET-N', 'MOSFET-P', 'Op-Amp', 'Resistor', 'V-AC',
     'V-DC', 'V-DC (one port)', 'Wire Crossover', 'Zener Diode'
 ]
 
 CLASS_COLORS = {
-    'Resistor': (0, 102, 255),      # Bright Blue
-    'Capacitor': (220, 20, 60),     # Crimson Red
-    'Diode': (255, 140, 0),         # Dark Orange
-    'GND': (0, 153, 76),            # Forest Green
-    'Op-Amp': (138, 43, 226),       # Blue Violet
-    'Inductor': (255, 20, 147),     # Deep Pink
-    'BJT-NPN': (0, 206, 209),       # Dark Turquoise
-    'BJT-PNP': (255, 215, 0),       # Gold
-    'MOSFET-N': (75, 0, 130),       # Indigo
-    'MOSFET-P': (128, 0, 128)       # Purple
+    'Resistor': (0, 102, 255),
+    'Capacitor': (220, 20, 60),
+    'Diode': (255, 140, 0),
+    'GND': (0, 153, 76),
+    'Op-Amp': (138, 43, 226),
+    'Inductor': (255, 20, 147),
+    'BJT-NPN': (0, 206, 209),
+    'BJT-PNP': (255, 215, 0),
+    'MOSFET-N': (75, 0, 130),
+    'MOSFET-P': (128, 0, 128),
+    'V-AC': (46, 139, 87),
+    'V-DC': (255, 99, 71),
+    'V-DC (one port)': (219, 112, 147),
+    'I-AC': (0, 191, 255),
+    'I-DC': (218, 165, 32),
+    'Wire Crossover': (105, 105, 105),
+    'Zener Diode': (255, 69, 0)
 }
 DEFAULT_COLOR = (255, 0, 0)
 
@@ -59,14 +66,29 @@ if session is None:
     st.stop()
 
 # --- Helper Functions ---
+def letterbox_resize(image, target_size=(640, 640), fill_color=(114, 114, 114)):
+    """Resize an image to target_size while preserving aspect ratio, padding with fill_color."""
+    orig_w, orig_h = image.size
+    target_w, target_h = target_size
+    scale = min(target_w / orig_w, target_h / orig_h)
+    new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+    resized = image.resize((new_w, new_h))
+
+    new_image = Image.new("RGB", target_size, fill_color)
+    pad_x, pad_y = (target_w - new_w) // 2, (target_h - new_h) // 2
+    new_image.paste(resized, (pad_x, pad_y))
+    return new_image, scale, pad_x, pad_y
+
+
 def preprocess_image(image: Image.Image):
-    img_resized = image.resize(IMG_SIZE)
-    img_np = np.array(img_resized).astype(np.float32) / 255.0
+    img_letterboxed, scale, pad_x, pad_y = letterbox_resize(image, IMG_SIZE)
+    img_np = np.array(img_letterboxed).astype(np.float32) / 255.0
     img_np = img_np.transpose(2, 0, 1)
     img_np = np.expand_dims(img_np, axis=0)
-    return img_np
+    return img_np, scale, pad_x, pad_y
 
-def postprocess_output(output, original_size, conf_thresh=0.25, iou_thresh=0.45):
+
+def postprocess_output(output, scale, pad_x, pad_y, conf_thresh=0.25, iou_thresh=0.45):
     predictions = np.squeeze(output[0]).T
     scores = np.max(predictions[:, 4:], axis=1)
     mask = scores > conf_thresh
@@ -79,15 +101,11 @@ def postprocess_output(output, original_size, conf_thresh=0.25, iou_thresh=0.45)
     boxes = predictions[:, :4]
     class_ids = np.argmax(predictions[:, 4:], axis=1)
 
-    orig_w, orig_h = original_size
-    scale_x = orig_w / IMG_SIZE[0]
-    scale_y = orig_h / IMG_SIZE[1]
-
     x_center, y_center, box_w, box_h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-    x1 = (x_center - box_w / 2) * scale_x
-    y1 = (y_center - box_h / 2) * scale_y
-    x2 = (x_center + box_w / 2) * scale_x
-    y2 = (y_center + box_h / 2) * scale_y
+    x1 = (x_center - box_w / 2 - pad_x) / scale
+    y1 = (y_center - box_h / 2 - pad_y) / scale
+    x2 = (x_center + box_w / 2 - pad_x) / scale
+    y2 = (y_center + box_h / 2 - pad_y) / scale
     boxes = np.stack([x1, y1, x2, y2], axis=1)
 
     indices = []
@@ -120,6 +138,7 @@ def postprocess_output(output, original_size, conf_thresh=0.25, iou_thresh=0.45)
         'class_name': CLASS_NAMES[int(class_ids[idx])]
     } for idx in indices]
 
+
 # --- UI Interface ---
 st.title("⚡ Electronic Schematic Symbol Classifier")
 st.markdown("Upload a picture of a hand-drawn electronic circuit schematic to automatically detect components.")
@@ -132,17 +151,16 @@ iou_threshold = st.sidebar.slider("Overlap Sensitivity (IoU)", 0.10, 0.90, 0.45,
 # --- File / Sample Image Selector ---
 st.markdown("### Choose or Upload a Schematic")
 
-# 1. Look for sample images in the "samples" directory
 sample_files = []
 if os.path.exists(SAMPLE_DIR):
     sample_files = [f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith(('png', 'jpg', 'jpeg'))]
 
-# 2. Add an input method choice
 input_type = st.radio(
     "Select Input Source:",
     ["Upload Custom Image", "Use Sample Schematic"],
     horizontal=True
 )
+
 
 # --- Process and Display ---
 def display_image(image):
@@ -156,12 +174,12 @@ def display_image(image):
 
         with col2:
             st.subheader("Detected Components")
-            input_tensor = preprocess_image(image)
+            input_tensor, scale, pad_x, pad_y = preprocess_image(image)
             input_name = session.get_inputs()[0].name
             output_name = session.get_outputs()[0].name
             outputs = session.run([output_name], {input_name: input_tensor})
 
-            detections = postprocess_output(outputs, orig_size, conf_threshold, iou_threshold)
+            detections = postprocess_output(outputs, scale, pad_x, pad_y, conf_threshold, iou_threshold)
 
             if detections:
                 img_draw = image.copy()
@@ -187,11 +205,10 @@ def display_image(image):
             else:
                 st.warning("No components detected with current thresholds.")
 
-        # Detection Metrics Summary
         if detections:
             st.markdown("### Detection Summary")
             st.write(f"**Total components detected: {len(detections)}**")
-            
+
             counts = {}
             for det in detections:
                 name = det['class_name']
