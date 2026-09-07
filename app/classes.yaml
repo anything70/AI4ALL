@@ -1,0 +1,49 @@
+# Single source of truth for detector class names and display colors.
+#
+# This file is shared between the training notebook (as the YOLO `data.yaml`
+# style class list, under `names:`) and app.py (for CLASS_NAMES/CLASS_COLORS).
+# If the training config's class order ever changes, update it here ONCE —
+# previously CLASS_NAMES/CLASS_COLORS were hardcoded twice and could silently
+# drift out of sync with whatever data.yaml the model was actually trained on,
+# producing wrong labels with no error.
+#
+# `names` order MUST match the class index order the model was trained with.
+names:
+  - BJT-NPN
+  - BJT-PNP
+  - Capacitor
+  - Diode
+  - GND
+  - I-AC
+  - I-DC
+  - Inductor
+  - MOSFET-N
+  - MOSFET-P
+  - Op-Amp
+  - Resistor
+  - V-AC
+  - V-DC
+  - V-DC (one port)
+  - Wire Crossover
+  - Zener Diode
+
+# RGB colors used to draw each class's bounding box / label. Any class not
+# listed here falls back to DEFAULT_COLOR in app.py.
+colors:
+  Resistor: [0, 102, 255]
+  Capacitor: [220, 20, 60]
+  Diode: [255, 140, 0]
+  GND: [0, 153, 76]
+  Op-Amp: [138, 43, 226]
+  Inductor: [255, 20, 147]
+  BJT-NPN: [0, 206, 209]
+  BJT-PNP: [255, 215, 0]
+  MOSFET-N: [75, 0, 130]
+  MOSFET-P: [128, 0, 128]
+  V-AC: [46, 139, 87]
+  V-DC: [255, 99, 71]
+  V-DC (one port): [219, 112, 147]
+  I-AC: [0, 191, 255]
+  I-DC: [218, 165, 32]
+  Wire Crossover: [105, 105, 105]
+  Zener Diode: [255, 69, 0]
