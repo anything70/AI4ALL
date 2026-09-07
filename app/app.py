@@ -4,6 +4,7 @@ import onnxruntime
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import os
+import io
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -88,7 +89,7 @@ def preprocess_image(image: Image.Image):
     return img_np, scale, pad_x, pad_y
 
 
-def postprocess_output(output, scale, pad_x, pad_y, conf_thresh=0.25, iou_thresh=0.45):
+def postprocess_output(output, scale, pad_x, pad_y, orig_w, orig_h, conf_thresh=0.25, iou_thresh=0.45):
     predictions = np.squeeze(output[0]).T
     scores = np.max(predictions[:, 4:], axis=1)
     mask = scores > conf_thresh
@@ -106,6 +107,12 @@ def postprocess_output(output, scale, pad_x, pad_y, conf_thresh=0.25, iou_thresh
     y1 = (y_center - box_h / 2 - pad_y) / scale
     x2 = (x_center + box_w / 2 - pad_x) / scale
     y2 = (y_center + box_h / 2 - pad_y) / scale
+
+    x1 = np.clip(x1, 0, orig_w)
+    x2 = np.clip(x2, 0, orig_w)
+    y1 = np.clip(y1, 0, orig_h)
+    y2 = np.clip(y2, 0, orig_h)
+
     boxes = np.stack([x1, y1, x2, y2], axis=1)
 
     indices = []
@@ -179,7 +186,11 @@ def display_image(image):
             output_name = session.get_outputs()[0].name
             outputs = session.run([output_name], {input_name: input_tensor})
 
-            detections = postprocess_output(outputs, scale, pad_x, pad_y, conf_threshold, iou_threshold)
+            detections = postprocess_output(
+                outputs, scale, pad_x, pad_y,
+                orig_size[0], orig_size[1],
+                conf_threshold, iou_threshold
+            )
 
             if detections:
                 img_draw = image.copy()
@@ -202,6 +213,15 @@ def display_image(image):
                     draw.text((x1 + 3, y1 - th - 3), label, fill="white", font=font)
 
                 st.image(img_draw, use_container_width=True)
+
+                buf = io.BytesIO()
+                img_draw.save(buf, format="PNG")
+                st.download_button(
+                    label="Download annotated image",
+                    data=buf.getvalue(),
+                    file_name="detected_schematic.png",
+                    mime="image/png"
+                )
             else:
                 st.warning("No components detected with current thresholds.")
 
