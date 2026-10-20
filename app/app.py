@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-import streamlit as st
-import onnxruntime
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-import os
+import ast
+import hashlib
 import io
 import json
+import os
+
+import numpy as np
+import onnxruntime
+import streamlit as st
 import yaml
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -18,20 +21,18 @@ st.set_page_config(
 # --- Paths (anchored to this script's location, not the working directory) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_ONNX_MODEL_PATH = os.path.join(BASE_DIR, "..", "models", "best.onnx")
-FONT_PATH = os.path.join(BASE_DIR, "arial.ttf")
 SAMPLE_DIR = os.path.join(BASE_DIR, "samples")
 CLASSES_YAML_PATH = os.path.join(BASE_DIR, "classes.yaml")
 
-IMG_SIZE = (640, 640)
+DEFAULT_IMG_SIZE = (640, 640)
 DEFAULT_COLOR = (255, 0, 0)
+MAX_DETECTIONS = 300
 
 
 @st.cache_data(show_spinner=False)
 def load_classes(path):
-    """Load class names/colors from the single source of truth shared with
-    the training notebook, instead of keeping a second hardcoded copy here
-    that can silently drift out of sync with the model's actual class order.
-    """
+    """Load class names/colors from classes.yaml. The names here are only a
+    fallback — the model's own embedded metadata wins when it's available."""
     with open(path, "r") as f:
         config = yaml.safe_load(f)
     names = config["names"]
@@ -40,7 +41,7 @@ def load_classes(path):
 
 
 try:
-    CLASS_NAMES, CLASS_COLORS = load_classes(CLASSES_YAML_PATH)
+    YAML_CLASS_NAMES, CLASS_COLORS = load_classes(CLASSES_YAML_PATH)
 except Exception as e:
     st.error(f"Couldn't load '{CLASSES_YAML_PATH}': {e}")
     st.stop()
@@ -63,6 +64,26 @@ session = load_model()
 if session is None:
     st.stop()
 
+
+def read_model_metadata(session, fallback_names):
+    """Ultralytics embeds the class names and input size in the exported ONNX
+    file, so reading them from there means labels can never drift out of sync
+    with the weights that are actually loaded."""
+    meta = session.get_modelmeta().custom_metadata_map
+    try:
+        names_dict = ast.literal_eval(meta["names"])
+        names = [names_dict[i] for i in sorted(names_dict)]
+    except (KeyError, ValueError, SyntaxError):
+        names = fallback_names
+    try:
+        img_size = tuple(ast.literal_eval(meta["imgsz"]))
+    except (KeyError, ValueError, SyntaxError):
+        img_size = DEFAULT_IMG_SIZE
+    return names, img_size
+
+
+CLASS_NAMES, IMG_SIZE = read_model_metadata(session, YAML_CLASS_NAMES)
+
 # --- Helper Functions ---
 def letterbox_resize(image, target_size=(640, 640), fill_color=(114, 114, 114)):
     """Resize an image to target_size while preserving aspect ratio, padding with fill_color."""
@@ -70,7 +91,7 @@ def letterbox_resize(image, target_size=(640, 640), fill_color=(114, 114, 114)):
     target_w, target_h = target_size
     scale = min(target_w / orig_w, target_h / orig_h)
     new_w, new_h = int(orig_w * scale), int(orig_h * scale)
-    resized = image.resize((new_w, new_h))
+    resized = image.resize((new_w, new_h), Image.BILINEAR)
 
     new_image = Image.new("RGB", target_size, fill_color)
     pad_x, pad_y = (target_w - new_w) // 2, (target_h - new_h) // 2
@@ -87,22 +108,47 @@ def preprocess_image(image: Image.Image):
 
 
 @st.cache_data(show_spinner=False)
-def run_inference(_session, image_bytes: bytes, orig_size):
+def run_inference(_session, _image, image_key: str):
     """Run the ONNX forward pass once per distinct image and cache the raw
     output. Postprocessing (which depends on the confidence/IoU sliders) is
-    done separately on every rerun so dragging a slider no longer re-triggers
+    done separately on every rerun so dragging a slider doesn't re-trigger
     the expensive model forward pass.
 
-    `_session` is prefixed with an underscore so Streamlit doesn't try to hash
-    it; `image_bytes` (the actual cache key) captures everything that affects
-    the model output.
+    `_session` and `_image` are prefixed with an underscore so Streamlit
+    doesn't try to hash them; `image_key` (a hash of the source file's bytes)
+    is the actual cache key.
     """
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    input_tensor, scale, pad_x, pad_y = preprocess_image(image)
+    input_tensor, scale, pad_x, pad_y = preprocess_image(_image)
     input_name = _session.get_inputs()[0].name
     output_name = _session.get_outputs()[0].name
     outputs = _session.run([output_name], {input_name: input_tensor})
     return outputs, scale, pad_x, pad_y
+
+
+def non_max_suppression(boxes, scores, class_ids, iou_thresh, max_det=MAX_DETECTIONS):
+    """Greedy per-class NMS, vectorized with NumPy.
+
+    Boxes are shifted by a per-class offset so boxes of different classes can
+    never overlap, which lets a single pass handle every class at once.
+    """
+    offsets = class_ids[:, None] * (boxes.max() + 1)
+    shifted = boxes + offsets
+    x1, y1, x2, y2 = shifted.T
+    areas = (x2 - x1) * (y2 - y1)
+
+    order = scores.argsort()[::-1]
+    keep = []
+    while order.size > 0 and len(keep) < max_det:
+        i = order[0]
+        keep.append(i)
+        rest = order[1:]
+        iw = np.maximum(0.0, np.minimum(x2[i], x2[rest]) - np.maximum(x1[i], x1[rest]))
+        ih = np.maximum(0.0, np.minimum(y2[i], y2[rest]) - np.maximum(y1[i], y1[rest]))
+        inter = iw * ih
+        union = areas[i] + areas[rest] - inter
+        iou = np.where(union > 0, inter / np.maximum(union, 1e-9), 0.0)
+        order = rest[iou <= iou_thresh]
+    return keep
 
 
 def postprocess_output(output, scale, pad_x, pad_y, orig_w, orig_h, conf_thresh=0.25, iou_thresh=0.45):
@@ -119,52 +165,64 @@ def postprocess_output(output, scale, pad_x, pad_y, orig_w, orig_h, conf_thresh=
     class_ids = np.argmax(predictions[:, 4:], axis=1)
 
     x_center, y_center, box_w, box_h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-    x1 = (x_center - box_w / 2 - pad_x) / scale
-    y1 = (y_center - box_h / 2 - pad_y) / scale
-    x2 = (x_center + box_w / 2 - pad_x) / scale
-    y2 = (y_center + box_h / 2 - pad_y) / scale
-
-    x1 = np.clip(x1, 0, orig_w)
-    x2 = np.clip(x2, 0, orig_w)
-    y1 = np.clip(y1, 0, orig_h)
-    y2 = np.clip(y2, 0, orig_h)
-
+    x1 = np.clip((x_center - box_w / 2 - pad_x) / scale, 0, orig_w)
+    y1 = np.clip((y_center - box_h / 2 - pad_y) / scale, 0, orig_h)
+    x2 = np.clip((x_center + box_w / 2 - pad_x) / scale, 0, orig_w)
+    y2 = np.clip((y_center + box_h / 2 - pad_y) / scale, 0, orig_h)
     boxes = np.stack([x1, y1, x2, y2], axis=1)
 
-    indices = []
-    if len(boxes) > 0:
-        order = scores.argsort()[::-1]
-        keep = [True] * len(boxes)
-        for i in range(len(boxes)):
-            idx_i = order[i]
-            if not keep[idx_i]:
-                continue
-            indices.append(idx_i)
-            for j in range(i + 1, len(boxes)):
-                idx_j = order[j]
-                if not keep[idx_j]:
-                    continue
-                ix1, iy1 = np.maximum(x1[idx_i], x1[idx_j]), np.maximum(y1[idx_i], y1[idx_j])
-                ix2, iy2 = np.minimum(x2[idx_i], x2[idx_j]), np.minimum(y2[idx_i], y2[idx_j])
-                iw, ih = np.maximum(0., ix2 - ix1), np.maximum(0., iy2 - iy1)
-                inter = iw * ih
-                area_i = (x2[idx_i] - x1[idx_i]) * (y2[idx_i] - y1[idx_i])
-                area_j = (x2[idx_j] - x1[idx_j]) * (y2[idx_j] - y1[idx_j])
-                union = area_i + area_j - inter
-                iou = inter / union if union > 0 else 0
-                if iou > iou_thresh and class_ids[idx_i] == class_ids[idx_j]:
-                    keep[idx_j] = False
+    indices = non_max_suppression(boxes, scores, class_ids, iou_thresh)
 
     return [{
-        'box': boxes[idx].tolist(),
-        'score': float(scores[idx]),
+        'box': [round(float(v), 1) for v in boxes[idx]],
+        'score': round(float(scores[idx]), 4),
         'class_name': CLASS_NAMES[int(class_ids[idx])]
     } for idx in indices]
 
 
+def load_label_font(size):
+    # Pillow >= 10.1 ships a scalable open-licensed default font, so labels
+    # scale with image resolution without bundling a font file.
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def text_color_for(rgb):
+    """Black text on light label backgrounds (yellow, cyan), white on dark ones."""
+    r, g, b = rgb
+    return "black" if 0.299 * r + 0.587 * g + 0.114 * b > 140 else "white"
+
+
+def draw_detections(image, detections):
+    img_draw = image.copy()
+    draw = ImageDraw.Draw(img_draw)
+    line_width = max(2, int(0.004 * min(image.size)))
+    font = load_label_font(max(12, int(0.02 * min(image.size))))
+
+    for det in detections:
+        x1, y1, x2, y2 = det['box']
+        label = f"{det['class_name']} {det['score']:.2f}"
+        color = CLASS_COLORS.get(det['class_name'], DEFAULT_COLOR)
+
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=line_width)
+        bbox = draw.textbbox((0, 0), label, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        label_y = max(0, y1 - th - 6)
+        label_x1 = max(0, min(x1, image.width - tw - 6))
+        draw.rectangle([label_x1, label_y, label_x1 + tw + 6, label_y + th + 6], fill=color)
+        draw.text((label_x1 + 3, label_y + 3 - bbox[1]), label, fill=text_color_for(color), font=font)
+
+    return img_draw
+
+
 # --- UI Interface ---
 st.title("⚡ Electronic Schematic Symbol Classifier")
-st.markdown("Upload a picture of a hand-drawn electronic circuit schematic to automatically detect components.")
+st.markdown(
+    "Upload a photo or scan of a **hand-drawn circuit schematic** and a YOLOv8 Nano "
+    f"model will detect and label its components across **{len(CLASS_NAMES)} symbol classes**."
+)
 
 # Sidebar Settings
 DEFAULT_CONF_THRESHOLD = 0.25
@@ -183,19 +241,24 @@ def reset_thresholds():
 
 st.sidebar.header("⚙️ Model Sensitivity Settings")
 conf_threshold = st.sidebar.slider(
-    "Confidence Threshold", 0.05, 0.95, step=0.05, key="conf_threshold"
+    "Confidence Threshold", 0.05, 0.95, step=0.05, key="conf_threshold",
+    help="Only show detections the model is at least this confident about."
 )
 iou_threshold = st.sidebar.slider(
-    "Overlap Sensitivity (IoU)", 0.10, 0.90, step=0.05, key="iou_threshold"
+    "Overlap Sensitivity (IoU)", 0.10, 0.90, step=0.05, key="iou_threshold",
+    help="Lower values merge overlapping boxes of the same component more aggressively."
 )
-st.sidebar.button("Reset to defaults", on_click=reset_thresholds)
+st.sidebar.button("Reset to defaults", on_click=reset_thresholds, width="stretch")
+
+with st.sidebar.expander("🔎 Detectable components"):
+    st.markdown("\n".join(f"- {name}" for name in CLASS_NAMES))
 
 # --- File / Sample Image Selector ---
 st.markdown("### Choose or Upload a Schematic")
 
 sample_files = []
 if os.path.exists(SAMPLE_DIR):
-    sample_files = [f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith(('png', 'jpg', 'jpeg'))]
+    sample_files = sorted(f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith(('png', 'jpg', 'jpeg')))
 
 input_type = st.radio(
     "Select Input Source:",
@@ -205,100 +268,75 @@ input_type = st.radio(
 
 
 # --- Process and Display ---
-def display_image(image):
-    if image is not None:
-        orig_size = image.size
+def display_image(image, image_key):
+    orig_w, orig_h = image.size
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Original Image")
-            st.image(image, use_container_width=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Original Image")
+        st.image(image, width="stretch")
 
-        with col2:
-            st.subheader("Detected Components")
+    with col2:
+        st.subheader("Detected Components")
 
-            img_buf = io.BytesIO()
-            image.save(img_buf, format="PNG")
-            image_bytes = img_buf.getvalue()
+        with st.spinner("Running detection..."):
+            outputs, scale, pad_x, pad_y = run_inference(session, image, image_key)
 
-            with st.spinner("Running detection..."):
-                outputs, scale, pad_x, pad_y = run_inference(session, image_bytes, orig_size)
+        detections = postprocess_output(
+            outputs, scale, pad_x, pad_y,
+            orig_w, orig_h,
+            conf_threshold, iou_threshold
+        )
 
-            detections = postprocess_output(
-                outputs, scale, pad_x, pad_y,
-                orig_size[0], orig_size[1],
-                conf_threshold, iou_threshold
+        if not detections:
+            st.warning("No components detected with current thresholds. Try lowering the confidence threshold.")
+            return
+
+        img_draw = draw_detections(image, detections)
+        st.image(img_draw, width="stretch")
+
+        buf = io.BytesIO()
+        img_draw.save(buf, format="PNG")
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button(
+                label="⬇️ Annotated image",
+                data=buf.getvalue(),
+                file_name="detected_schematic.png",
+                mime="image/png",
+                width="stretch"
+            )
+        with dl_col2:
+            st.download_button(
+                label="⬇️ Detections (JSON)",
+                data=json.dumps(detections, indent=2),
+                file_name="detections.json",
+                mime="application/json",
+                width="stretch"
             )
 
-            if detections:
-                img_draw = image.copy()
-                draw = ImageDraw.Draw(img_draw)
-                font_size = max(12, int(0.02 * min(orig_size)))
-                try:
-                    font = ImageFont.truetype(FONT_PATH, font_size)
-                except IOError:
-                    # Pillow >= 9.2 supports a size arg on the default font so labels
-                    # still scale with image resolution even without arial.ttf present.
-                    try:
-                        font = ImageFont.load_default(size=font_size)
-                    except TypeError:
-                        font = ImageFont.load_default()
+    st.divider()
+    st.markdown("### Detection Summary")
 
-                for det in detections:
-                    x1, y1, x2, y2 = det['box']
-                    label = f"{det['class_name']} {det['score']:.2f}"
-                    color = CLASS_COLORS.get(det['class_name'], DEFAULT_COLOR)
+    counts = {}
+    for det in detections:
+        name = det['class_name']
+        counts[name] = counts.get(name, 0) + 1
 
-                    draw.rectangle([x1, y1, x2, y2], outline=color, width=4)
-                    bbox = draw.textbbox((0, 0), label, font=font)
-                    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                    label_y = max(0, y1 - th - 6)
-                    label_x2 = min(image.width, x1 + tw + 6)
-                    draw.rectangle([x1, label_y, label_x2, label_y + th + 6], fill=color)
-                    draw.text((x1 + 3, label_y + 3), label, fill="white", font=font)
-
-                st.image(img_draw, use_container_width=True)
-
-                buf = io.BytesIO()
-                img_draw.save(buf, format="PNG")
-                dl_col1, dl_col2 = st.columns(2)
-                with dl_col1:
-                    st.download_button(
-                        label="Download annotated image",
-                        data=buf.getvalue(),
-                        file_name="detected_schematic.png",
-                        mime="image/png"
-                    )
-                with dl_col2:
-                    st.download_button(
-                        label="Download detections (JSON)",
-                        data=json.dumps(detections, indent=2),
-                        file_name="detections.json",
-                        mime="application/json"
-                    )
-            else:
-                st.warning("No components detected with current thresholds.")
-
-        if detections:
-            st.markdown("### Detection Summary")
-            st.write(f"**Total components detected: {len(detections)}**")
-
-            counts = {}
-            for det in detections:
-                name = det['class_name']
-                counts[name] = counts.get(name, 0) + 1
-
-            cols = st.columns(min(4, len(counts)))
-            for i, (name, count) in enumerate(sorted(counts.items())):
-                cols[i % len(cols)].metric(label=name, value=count)
+    st.metric(label="Total components detected", value=len(detections))
+    cols = st.columns(min(4, len(counts)))
+    for i, (name, count) in enumerate(sorted(counts.items())):
+        cols[i % len(cols)].metric(label=name, value=count)
 
 
-def safe_load_image(source):
+def safe_load_image(image_bytes):
     """Open an image and guard against corrupted files, unsupported formats,
     and unreasonably small/large uploads that would produce degenerate
     letterbox results or slow the app down."""
     try:
-        image = Image.open(source).convert("RGB")
+        image = Image.open(io.BytesIO(image_bytes))
+        # Phone photos store rotation in EXIF rather than in the pixels.
+        image = ImageOps.exif_transpose(image).convert("RGB")
     except Exception:
         st.error("Couldn't read that image — try a different file.")
         st.stop()
@@ -312,17 +350,20 @@ def safe_load_image(source):
     return image
 
 
+def show(image_bytes):
+    image = safe_load_image(image_bytes)
+    display_image(image, hashlib.sha256(image_bytes).hexdigest())
+
+
 if input_type == "Use Sample Schematic":
     if sample_files:
         selected_sample = st.selectbox("Choose a sample schematic:", sample_files)
-        sample_path = os.path.join(SAMPLE_DIR, selected_sample)
-        image = safe_load_image(sample_path)
-        display_image(image)
+        with open(os.path.join(SAMPLE_DIR, selected_sample), "rb") as f:
+            show(f.read())
     else:
         st.info("No sample images found in the 'samples/' folder. Please upload an image below.")
 
 if input_type == "Upload Custom Image":
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
     if uploaded_file is not None:
-        image = safe_load_image(uploaded_file)
-        display_image(image)
+        show(uploaded_file.getvalue())

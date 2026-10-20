@@ -1,13 +1,10 @@
-# Single source of truth for detector class names and display colors.
+# Detector class names and display colors used by app.py.
 #
-# This file is shared between the training notebook (as the YOLO `data.yaml`
-# style class list, under `names:`) and app.py (for CLASS_NAMES/CLASS_COLORS).
-# If the training config's class order ever changes, update it here ONCE —
-# previously CLASS_NAMES/CLASS_COLORS were hardcoded twice and could silently
-# drift out of sync with whatever data.yaml the model was actually trained on,
-# producing wrong labels with no error.
-#
-# `names` order MUST match the class index order the model was trained with.
+# app.py reads class names from the metadata embedded in models/best.onnx
+# first, so labels always match the loaded weights. The `names` list below is
+# only a fallback for models exported without that metadata — if you use it,
+# its order MUST match the class index order in the training notebook's
+# data.yaml.
 names:
   - BJT-NPN
   - BJT-PNP
