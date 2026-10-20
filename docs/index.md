@@ -29,13 +29,13 @@ Hand-drawn circuit schematics are standard for fast prototyping and engineering 
 ## Methodologies <!--- do not change this line -->
 
 * **Model Training & Architecture:** Trained a lightweight, single-stage **YOLOv8 Nano** supervised object detection model with early stopping at **43 epochs** to prevent overfitting as validation loss plateaued.
-* **Model Optimization & Export:** Exported trained weights into the **ONNX** runtime format for fast, client-side inference bundled directly into the web app.
+* **Model Optimization & Export:** Exported trained weights into the **ONNX** runtime format for fast, lightweight server-side inference bundled directly into the web app, with no PyTorch dependency at runtime.
 * **Web UI & Deployment:** Built an interactive **Streamlit** dashboard configured via a Procfile for streamlined deployment and user testing.
 * **Bias Mitigation & Responsible AI:**
   * Sourced diverse schematic drawings to mitigate handwriting style bias.
   * Applied data augmentation (rotation, stroke-width variation, and scaling) to generalize across sketching conventions.
   * Evaluated per-class precision and recall metrics to surface performance discrepancies across frequent vs. rare components.
-  * Implemented balanced sampling to prevent common symbols (resistors, ground) from overshadowing complex, less frequent components..
+  * Implemented balanced sampling to prevent common symbols (resistors, ground) from overshadowing complex, less frequent components.
 
 ## Data Sources <!--- do not change this line -->
 
